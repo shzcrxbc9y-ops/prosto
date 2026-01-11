@@ -159,7 +159,10 @@
             message.style.display = 'none';
             
             try {
-                const response = await fetch('/.netlify/functions/save', {
+                // Определяем, какой API endpoint использовать
+                // Пробуем Vercel API, если не работает - Netlify
+                const apiUrl = '/api/save';
+                const response = await fetch(apiUrl, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
