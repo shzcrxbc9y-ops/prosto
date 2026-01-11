@@ -27,22 +27,26 @@ exports.handler = async (event, context) => {
         const GITHUB_REPO = process.env.GITHUB_REPO; // формат: owner/repo
         const GITHUB_BRANCH = process.env.GITHUB_BRANCH || 'main';
         
-        // Если GitHub токен не настроен, используем простое логирование
+        // Если GitHub токен не настроен, возвращаем ошибку
         if (!GITHUB_TOKEN || !GITHUB_REPO) {
             const now = new Date();
             const timestamp = now.toISOString().replace('T', ' ').substring(0, 19);
             const logEntry = `[${timestamp}] ${data.trim()}\n`;
             
-            // Просто логируем в консоль Netlify
-            console.log('DATA_SAVE:', logEntry);
+            // Логируем в консоль Netlify для отладки
+            console.log('DATA_SAVE (no GitHub config):', logEntry);
+            console.log('GITHUB_TOKEN:', GITHUB_TOKEN ? 'SET' : 'NOT SET');
+            console.log('GITHUB_REPO:', GITHUB_REPO || 'NOT SET');
             
             return {
                 statusCode: 200,
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ 
-                    success: true, 
-                    message: 'Данные залогированы (настройте GitHub для постоянного хранения)',
-                    timestamp: timestamp
+                    success: false, 
+                    error: 'GitHub не настроен',
+                    message: 'Для сохранения данных в файл необходимо настроить переменные окружения GITHUB_TOKEN и GITHUB_REPO в Netlify. Данные залогированы в консоль Netlify.',
+                    timestamp: timestamp,
+                    help: 'См. инструкцию в DEPLOY.md'
                 })
             };
         }
@@ -70,17 +74,45 @@ exports.handler = async (event, context) => {
             
             if (getFileResponse.ok) {
                 const fileData = await getFileResponse.json();
-                existingContent = Buffer.from(fileData.content, 'base64').toString('utf8');
+                // Декодируем base64 содержимое
+                const contentBuffer = Buffer.from(fileData.content.replace(/\n/g, ''), 'base64');
+                existingContent = contentBuffer.toString('utf8');
                 fileSha = fileData.sha;
+                console.log('Existing file found, SHA:', fileSha);
+            } else if (getFileResponse.status === 404) {
+                // Файл не существует, создадим новый
+                console.log('File does not exist, will create new one');
+            } else {
+                const errorText = await getFileResponse.text();
+                console.error('GitHub API error (GET):', getFileResponse.status, errorText);
+                throw new Error(`Не удалось прочитать файл: ${getFileResponse.status}`);
             }
         } catch (err) {
-            // Файл не существует, создадим новый
-            console.log('File does not exist, will create new one');
+            console.error('Error reading file:', err);
+            if (err.message && !err.message.includes('Не удалось прочитать файл')) {
+                throw new Error(`Ошибка при чтении файла: ${err.message}`);
+            }
+            throw err;
         }
         
         // Добавляем новую запись
         const updatedContent = existingContent + newEntry;
-        const contentBase64 = Buffer.from(updatedContent).toString('base64');
+        // Кодируем в base64 для GitHub API
+        const contentBase64 = Buffer.from(updatedContent, 'utf8').toString('base64');
+        
+        // Подготавливаем данные для обновления
+        const updateData = {
+            message: `Add data entry: ${data.trim().substring(0, 50)}`,
+            content: contentBase64,
+            branch: GITHUB_BRANCH
+        };
+        
+        // Если файл существует, добавляем SHA для обновления
+        if (fileSha) {
+            updateData.sha = fileSha;
+        }
+        
+        console.log('Updating file on GitHub, branch:', GITHUB_BRANCH, 'has SHA:', !!fileSha);
         
         // Обновляем файл через GitHub API
         const updateResponse = await fetch(
@@ -93,19 +125,30 @@ exports.handler = async (event, context) => {
                     'Content-Type': 'application/json',
                     'User-Agent': 'Netlify-Function'
                 },
-                body: JSON.stringify({
-                    message: `Add data entry: ${data.trim().substring(0, 50)}`,
-                    content: contentBase64,
-                    branch: GITHUB_BRANCH,
-                    ...(fileSha && { sha: fileSha })
-                })
+                body: JSON.stringify(updateData)
             }
         );
         
         if (!updateResponse.ok) {
             const errorData = await updateResponse.text();
-            throw new Error(`GitHub API error: ${updateResponse.status} - ${errorData}`);
+            console.error('GitHub API error (PUT):', updateResponse.status, errorData);
+            
+            // Пытаемся распарсить ошибку для более понятного сообщения
+            let errorMessage = `Ошибка GitHub API (${updateResponse.status})`;
+            try {
+                const errorJson = JSON.parse(errorData);
+                if (errorJson.message) {
+                    errorMessage = errorJson.message;
+                }
+            } catch (e) {
+                // Игнорируем ошибку парсинга
+            }
+            
+            throw new Error(errorMessage);
         }
+        
+        const result = await updateResponse.json();
+        console.log('File updated successfully, commit SHA:', result.commit?.sha);
         
         return {
             statusCode: 200,

@@ -169,11 +169,12 @@
                 
                 const result = await response.json();
                 
-                if (response.ok) {
-                    showMessage('✅ Данные успешно сохранены!', 'success');
+                if (response.ok && result.success !== false) {
+                    showMessage('✅ Данные успешно сохранены в файл data.txt!', 'success');
                     input.value = '';
                 } else {
-                    showMessage('❌ Ошибка: ' + (result.error || 'Не удалось сохранить'), 'error');
+                    const errorMsg = result.error || result.message || 'Не удалось сохранить';
+                    showMessage('❌ Ошибка: ' + errorMsg + (result.help ? ' (' + result.help + ')' : ''), 'error');
                 }
             } catch (error) {
                 showMessage('❌ Ошибка соединения: ' + error.message, 'error');
